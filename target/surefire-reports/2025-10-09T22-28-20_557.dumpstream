@@ -1,5 +1,0 @@
-# Created at 2025-10-09T22:28:20.714
-Boot Manifest-JAR contains absolute paths in classpath 'E:\work_java\Team_project\garbage_recycling\garbage_recycling\target\test-classes'
-Hint: <argLine>-Djdk.net.URLClassPath.disableClassPathURLCheck=true</argLine>
-'other' has different root
-

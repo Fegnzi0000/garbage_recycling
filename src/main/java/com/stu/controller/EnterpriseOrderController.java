@@ -1,21 +1,21 @@
 package com.stu.controller;
 
-import com.stu.entity.BulkOrderRequest;
-import com.stu.entity.EnterpriseUser;
-import com.stu.entity.RecyclingPlan;
-import com.stu.entity.RecyclingPlanRequest;
+import com.stu.entity.*;
 import com.stu.service.*;
 import com.stu.vo.ApiResponse;
 import com.stu.vo.OrderResponse;
 import com.stu.vo.RecyclingPlanResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.Parameters;
+import io.swagger.v3.oas.annotations.enums.ParameterIn;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
+import javax.xml.transform.Result;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 
@@ -84,6 +84,28 @@ public class EnterpriseOrderController {
 
         return ApiResponse.success(RecyclingPlanResponse.fromPlan(plan));
     }
+    @PostMapping("/invoice/{orderId}")
+    @Operation(summary = "企业申请发票", description = "仅允许为状态为“已完成”的企业订单申请发票")
+    @Parameters({
+            @Parameter(name = "orderId", description = "订单ID", in = ParameterIn.PATH, required = true),
+            @Parameter(name = "applyDTO", description = "发票申请信息（抬头+税号）", in = ParameterIn.DEFAULT, required = true),
+            @Parameter(name = "Authorization", description = "Bearer Token", in = ParameterIn.HEADER, required = true)
+    })
+//    public Result applyInvoice(
+//            @PathVariable Long orderId,
+//            @Valid @RequestBody InvoiceApplyDTO applyDTO,
+//            @RequestHeader("Authorization") String authHeader) {
+//        String token = authHeader.substring(7);
+//        Long userId = jwtUtil.getUserIdFromToken(token);
+//
+//        User enterprise = userService.getById(userId);
+//        if (enterprise == null || !"enterprise".equals(enterprise.getUserType())) {
+//            return Result.error("非企业用户，无法申请发票");
+//        }
+//
+//        Invoice invoice = enterpriseOrderService.applyInvoice(orderId, userId, applyDTO);
+//        return Result.success(invoice);
+//    }
 
     private LocalDate calculateNextDate(String cycleType) {
         LocalDate base = LocalDate.now();
