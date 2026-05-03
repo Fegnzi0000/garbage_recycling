@@ -205,6 +205,34 @@ get cache:category:detail:1
 
 > 注意：分类列表接口返回空列表属于“正常业务结果”，不会写入空字符串占位符；空字符串占位符仅用于数据库返回 `null` 的场景。
 
+### 4.9 AI 回收助手（LangChain4j）配置（可选）
+
+本项目提供一个“回收助手”模块：RAG 检索增强问答 + Tool 调用生成下单草稿。
+
+默认使用 OpenAI（可切换为 Ollama）。建议通过环境变量注入密钥与模型配置，避免写入仓库。
+
+#### 4.9.1 OpenAI（默认）
+
+设置环境变量：
+
+- `AI_PROVIDER=openai`
+- `OPENAI_API_KEY=<your_key>`
+- `OPENAI_MODEL=gpt-4o-mini`（可选）
+
+#### 4.9.2 Ollama（本地模型）
+
+如果本机已安装并启动 Ollama：
+
+- `AI_PROVIDER=ollama`
+- `OLLAMA_BASE_URL=http://localhost:11434`
+- `OLLAMA_MODEL=qwen2.5:7b`
+
+#### 4.9.3 RAG 知识库
+
+知识库文件位于：`src/main/resources/rag/recycling_knowledge.md`
+
+> 约束：知识库只存公共规则/流程，不要放用户手机号、详细地址等隐私数据；助手输出也应做脱敏。
+
 ### 4.3 MyBatis-Plus
 
 - `mybatis-plus.mapper-locations`：XML 映射位置（`classpath:mapper/*.xml`）
@@ -299,6 +327,48 @@ get cache:category:detail:1
 - `POST /manage/order/manage/cancel/{orderId}`：取消订单
 - `POST /manage/order/repeat/{orderId}`：再来一单
 - `GET /manage/order/manage/list?page=1&size=10&status=`：订单列表（可按状态筛选）
+
+### 5.9 回收助手（LangChain4j，`/assistant`）
+
+> 本模块用于演示/落地：RAG 知识检索增强问答 + Tool 调用生成“下单草稿” + 二次确认提交流程。
+>
+> 安全策略：助手**只能生成草稿**，不会直接创建真实订单；真实订单必须由用户显式调用确认接口提交草稿。
+
+- `POST /assistant/chat`：与回收助手对话（需 Bearer Token）
+  - 输入：`sessionId`（可选，不传则后端生成并返回）、`message`
+  - 输出：`{ sessionId, answer }`
+  - 说明：当用户表达“我要下单/帮我下单”意图时，助手可通过 Tool 调用生成个人订单草稿，并在回答中返回 `draftId`。
+
+- `POST /assistant/order/draft/confirm`：二次确认并提交草稿（需 Bearer Token）
+  - 输入：`{ draftId }`
+  - 输出：与 `POST /order/personal` 一致的 `Result`（包含 `orderId/orderNo` 等）
+
+示例（生成草稿 → 二次确认提交）：
+
+1) 对话生成草稿
+
+```http
+POST http://localhost:8080/api/assistant/chat
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "sessionId": "demo_session_1",
+  "message": "我想下一个个人回收订单，地址用默认地址，预约明天上午10点，物品是废纸5kg"
+}
+```
+
+2) 复制助手返回的 `draftId`，提交草稿
+
+```http
+POST http://localhost:8080/api/assistant/order/draft/confirm
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "draftId": "<assistant_returned_draftId>"
+}
+```
 
 ---
 

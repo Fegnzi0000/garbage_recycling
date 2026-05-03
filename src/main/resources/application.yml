@@ -84,3 +84,25 @@ recycling:
       waste_paper: 1.00
       plastic_bottle: 2.00
       old_clothes: 0.50
+
+# --- AI 回收助手（LangChain4j） ---
+ai:
+  enabled: true
+  # openai / ollama
+  provider: ${AI_PROVIDER:openai}
+  openai:
+    api-key: ${OPENAI_API_KEY:}
+    model: ${OPENAI_MODEL:gpt-4o-mini}
+    temperature: 0.2
+  ollama:
+    base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+    model: ${OLLAMA_MODEL:qwen2.5:7b}
+    temperature: 0.2
+  rag:
+    enabled: true
+    knowledge-resource: rag/recycling_knowledge.md
+    max-results: 4
+    min-score: 0.6
+  memory:
+    max-messages: 20
+
