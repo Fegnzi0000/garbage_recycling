@@ -129,6 +129,82 @@ java -jar .\target\garbage_recycling-0.0.1-SNAPSHOT.jar
 - `spring.datasource.*`：MySQL 连接信息（Hikari 连接池参数位于 `spring.datasource.hikari.*`）
 - `spring.data.redis.*`：Redis 连接信息（如不使用 Redis，可按需关闭/替换）
 
+### 4.8 Redis 高级缓存策略（本仓库已实现）
+
+> 目标：在不引入 Elasticsearch 的前提下，先把高频“读多写少”的接口做缓存，并通过一些工程手段提升稳定性。
+
+本项目已新增一个 Redis 缓存封装 Bean：`com.stu.util.RedisCacheClient`，并在 `com.stu.service.impl.CategoryServiceImpl` 中对“分类查询”做了缓存接入。
+
+#### 4.8.1 覆盖的接口/查询点
+
+当前主要缓存以下查询（高频、读多写少）：
+
+- 一级分类列表：`GET /api/category/top`
+- 二级分类列表：`GET /api/category/{parentId}/sub`
+- 分类详情：`GET /api/category/{categoryId}`
+
+#### 4.8.2 缓存 Key 设计
+
+缓存 Key 常量位于：`com.stu.util.CacheConstants`
+
+- 一级分类列表：`cache:category:top`
+- 二级分类列表：`cache:category:sub:{parentId}`
+- 分类详情：`cache:category:detail:{categoryId}`
+- 缓存重建互斥锁：`lock:cache:{原缓存key}`
+
+> 说明：锁 key 只用于“逻辑过期重建”场景（热点 Key），避免并发下大量线程同时回源数据库。
+
+#### 4.8.3 策略说明（穿透 / 雪崩 / 击穿）
+
+1) **缓存穿透（Penetration）**：缓存空值
+
+- 当数据库查询返回 `null`（例如 `categoryId` 不存在）时，将在 Redis 中写入空字符串 `""` 作为占位符，并设置较短 TTL（默认 2 分钟）。
+- 后续请求命中占位符时直接返回 `null`，避免每次都打到数据库。
+
+2) **缓存雪崩（Avalanche）**：随机 TTL 抖动
+
+- 写入缓存时，会在基础 TTL 上增加一个随机抖动（默认 0~300 秒），避免大量 key 同一时刻过期导致流量瞬间回源。
+
+3) **缓存击穿（Breakdown / Hot Key）**：逻辑过期 + 异步重建
+
+分类详情使用“逻辑过期”策略（`RedisData{expireTime,data}`）：
+
+- 未过期：直接返回缓存
+- 已过期：**先返回旧值**（保证可用性），同时尝试加锁，成功后异步回源数据库并刷新缓存
+
+这种策略适合“热点 Key”场景：即便缓存过期，也不会让请求线程都阻塞等待回源。
+
+#### 4.8.4 默认 TTL 参数（可按需调整）
+
+目前默认值在 `com.stu.util.CacheConstants` 中：
+
+- 分类列表缓存 TTL：30 分钟（带 TTL 抖动）
+- 分类详情逻辑过期：30 分钟
+- 分类详情物理 TTL：120 分钟（通常要 > 逻辑过期，防止 Redis 永不过期）
+- 空值缓存 TTL：2 分钟
+- TTL 抖动上限：300 秒
+- 缓存重建锁 TTL：10 秒
+
+> 建议：后续如果加了“后台修改分类/价格”的功能，需要在更新成功后主动删除对应缓存 key（或做更精细的 key 管理）。
+
+#### 4.8.5 如何验证缓存是否生效
+
+1) 启动 Redis（本机默认 `localhost:6379`，与 `application.yml` 一致）。
+
+2) 启动后端，然后多次调用分类接口（例如 `/api/category/top`）。
+
+3) 使用 `redis-cli`（如已安装）查看 key：
+
+```bash
+keys cache:category:*
+ttl cache:category:top
+get cache:category:detail:1
+```
+
+4) 验证“缓存空值”：请求一个不存在的分类 ID（例如 `999999`），然后检查 Redis 中是否写入了占位符 key，并且 TTL 较短。
+
+> 注意：分类列表接口返回空列表属于“正常业务结果”，不会写入空字符串占位符；空字符串占位符仅用于数据库返回 `null` 的场景。
+
 ### 4.3 MyBatis-Plus
 
 - `mybatis-plus.mapper-locations`：XML 映射位置（`classpath:mapper/*.xml`）
