@@ -11,6 +11,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.UUID;
@@ -19,6 +20,7 @@ import java.util.UUID;
 @RequestMapping("/assistant")
 @Tag(name = "回收助手（LangChain4j）", description = "RAG 问答 + 工具调用（下单草稿）+ 二次确认")
 @SecurityRequirement(name = "bearerAuth")
+@ConditionalOnProperty(prefix = "ai", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class AssistantController {
 
     private final RecyclingAssistantOrchestrator assistantOrchestrator;

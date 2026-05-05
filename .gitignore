@@ -1,0 +1,25 @@
+# Maven / Java build outputs
+/target/
+*.class
+*.jar
+*.war
+*.ear
+
+# IntelliJ IDEA
+/.idea/
+*.iml
+*.iws
+*.ipr
+/out/
+
+# OS / misc
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local env / secrets
+application-local.yml
+http-client.private.env.json
+

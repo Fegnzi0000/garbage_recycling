@@ -1,6 +1,6 @@
 # 垃圾回收系统后端（garbage_recycling）
 
-> 文档最近更新：2026-05-02
+> 文档最近更新：2026-05-05
 >
 > 本仓库为 Spring Boot 后端服务，包含：微信（含测试模式）登录鉴权、垃圾分类与图片资源、地址管理、个人/高校/企业下单、订单管理等。
 >
@@ -38,6 +38,7 @@
 - **高校订单**：`/api/campusOrder/*`
 - **企业订单/计划**：`/api/enterprise/*`
 - **订单管理**：`/api/manage/order/*`（查询详情、修改、取消、再来一单等）
+- **回收助手（AI）**：`/api/assistant/*`（LangChain4j：RAG 问答 + Tool 调用生成下单草稿 + 二次确认）
 
 > 兼容说明：项目中还保留了部分“个人中心地址接口” `/api/user/center/addresses*`（对应 `address` 表）。如果你在做新功能或联调，优先使用 `/api/address/*` 这一套（`user_address` 表）。
 
@@ -232,6 +233,127 @@ get cache:category:detail:1
 知识库文件位于：`src/main/resources/rag/recycling_knowledge.md`
 
 > 约束：知识库只存公共规则/流程，不要放用户手机号、详细地址等隐私数据；助手输出也应做脱敏。
+
+#### 4.9.4 模块结构（关键类一览）
+
+AI 模块代码位于：`src/main/java/com/stu/ai/*`，核心组件如下：
+
+- 配置：
+  - `com.stu.ai.config.AiProperties`：读取 `ai.*` 配置
+  - `com.stu.ai.config.AiConfig`：按 `ai.provider` 构建 `ChatLanguageModel`；按 `ai.rag.enabled` 构建本地 Embedding + Retriever
+- RAG 初始化：
+  - `com.stu.ai.rag.KnowledgeBaseInitializer`：启动时加载 `recycling_knowledge.md` → 切分 → 向量化 → 写入 `EmbeddingStore`
+- Assistant 编排与对话：
+  - `com.stu.ai.service.RecyclingAssistant`：LangChain4j AI Service（系统提示词定义安全边界）
+  - `com.stu.ai.service.RecyclingAssistantOrchestrator`：每次请求构建 assistant 实例（用于注入“与 userId 绑定”的工具对象）
+- Tool（工具函数）：
+  - `com.stu.ai.tools.AddressAssistantTools`：`list_my_addresses`（只返回脱敏信息）
+  - `com.stu.ai.tools.OrderDraftAssistantTools`：`create_personal_order_draft`（只生成草稿，不创建真实订单）
+- 草稿服务（两阶段提交）：
+  - `com.stu.ai.service.OrderDraftService`：草稿写入 Redis + 二次确认提交创建真实订单
+- Controller：
+  - `com.stu.ai.controller.AssistantController`：`/assistant/chat`、`/assistant/order/draft/confirm`
+
+#### 4.9.5 RAG（检索增强生成）工作流程
+
+本项目的 RAG 目标：让助手回答“垃圾分类/下单流程/接口用法/注意事项”等问题时，能够**基于项目知识库**给出更贴合本系统的答案，而不是泛泛而谈。
+
+流程如下：
+
+1) **知识库编写**：
+   - 文件：`src/main/resources/rag/recycling_knowledge.md`
+   - 内容范围：公共规则、接口说明、流程提示、常见问答
+   - 禁止内容：用户手机号、详细地址、身份证等 PII
+
+2) **启动加载与切分**（`KnowledgeBaseInitializer`）：
+   - 启动时读取 knowledge markdown
+   - 当前切分策略：按空行分段（段落级 chunk）
+
+3) **向量化与存储**（本地 Embedding）：
+   - Embedding 模型：`AllMiniLmL6V2EmbeddingModel`（本地，**不依赖外部 key**）
+   - EmbeddingStore：`InMemoryEmbeddingStore`（内存型，适合本地开发/演示）
+
+4) **检索与注入**（ContentRetriever）：
+   - 对用户输入进行向量检索，取回相似片段（`ai.rag.max-results`）
+   - 过滤低相似度片段（`ai.rag.min-score`）
+   - LangChain4j 会将检索结果作为上下文提供给 LLM，以提升回答准确性
+
+> 说明：当前 EmbeddingStore 采用内存实现，重启应用会重新加载知识库并向量化；如需生产化，可替换为持久化向量库（如 pgvector、Milvus、Elastic vector、Redis vector 等）。
+
+#### 4.9.6 Tool Calling（工具调用）设计：只生成“下单草稿”
+
+助手具备“工具调用”能力：当用户表达明确意图（例如“帮我下单/用默认地址下单/预约明天上午”等），LLM 可以调用后端工具函数获取信息或生成草稿。
+
+本项目只开放两类工具（白名单）：
+
+1) `list_my_addresses`
+   - 实现：`AddressAssistantTools#listMyAddresses`
+   - 用途：让助手能拿到当前用户的地址 id 列表（已脱敏），从而建议/选择 `addressId`
+
+2) `create_personal_order_draft`
+   - 实现：`OrderDraftAssistantTools#createPersonalOrderDraft`
+   - 用途：生成个人订单“草稿”，返回 `draftId + summary`
+   - 注意：**不会创建真实订单**，不会触发支付
+
+为什么只做草稿？
+
+- LLM 可能产生误操作或被 prompt 注入诱导，直接创建真实订单有交易/安全风险
+- 草稿 + 二次确认可以把“写操作”变成显式用户行为，满足可审计、可控的业务要求
+
+#### 4.9.7 二次确认（Two-step Confirmation）与草稿存储
+
+草稿存储与提交逻辑位于：`OrderDraftService`
+
+- 草稿写入 Redis：
+  - key：`draft:order:{draftId}`
+  - value：`OrderDraft{userId,draftType,orderData,createdAt}` 的 JSON
+  - TTL：30 分钟（草稿过期后无法提交）
+
+- 草稿提交（创建真实订单）：
+  - 接口：`POST /api/assistant/order/draft/confirm`
+  - 入参：`{ "draftId": "..." }`
+  - 服务端校验：
+    1) 草稿是否存在/未过期
+    2) 草稿 `userId` 是否与当前 token 用户一致（防越权）
+    3) 草稿类型是否支持提交（当前仅 `personal`）
+    4) 草稿中的 `addressId` 是否属于当前用户（草稿生成阶段已校验，提交阶段再次校验也可加固）
+  - 创建订单：最终调用 `PersonOrderService#createPersonalOrder` 复用既有下单逻辑
+
+> 行为约束：草稿提交成功后会删除 Redis 草稿 key；提交失败则保留草稿，方便用户调整后再次确认。
+
+#### 4.9.8 安全与隐私（必须了解）
+
+1) **工具白名单**：仅暴露“地址列表（脱敏）/生成草稿”两类工具；不提供“取消订单/修改订单/支付”等高风险工具。
+
+2) **服务端强校验**：
+   - 草稿与地址都绑定 `userId` 校验，避免越权。
+
+3) **隐私脱敏**：
+   - `AddressAssistantTools` 对详细地址做截断脱敏（仅保留前 6 个字符）。
+   - `RecyclingAssistant` 的系统提示词明确禁止输出用户手机号、完整地址等 PII。
+
+4) **防 Prompt Injection 的基本策略**（建议面试/答辩可讲）：
+   - 把“可调用工具”限定在最小集合，并在工具层做权限校验。
+   - 对所有写操作引入二次确认（本项目已落地）。
+   - 不把敏感信息写入知识库。
+
+#### 4.9.9 调试与模型选择建议
+
+- **OpenAI**：函数/工具调用能力相对稳定，适合演示 Tool Calling。
+- **Ollama（本地模型）**：可用于本地对话，但不同模型对 tool/function calling 支持程度不同；若出现“只聊天不调用工具”的情况，建议：
+  1) 换更支持工具调用的模型
+  2) 调整提示词，让用户意图更明确（例如显式给出 addressId）
+
+#### 4.9.10 如何关闭 AI 模块
+
+如果你暂时不需要 AI（或本地没有模型/密钥），可以在 `application.yml` 中设置：
+
+```yaml
+ai:
+  enabled: false
+```
+
+关闭后：`/api/assistant/*` 接口不会注册，应用仍可正常启动与使用其他业务模块。
 
 ### 4.3 MyBatis-Plus
 

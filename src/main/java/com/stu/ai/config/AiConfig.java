@@ -38,8 +38,9 @@ public class AiConfig {
                     .temperature(props.getOllama().getTemperature())
                     .build();
             case "openai" -> {
+                // 允许应用在未配置 key 时正常启动：AI 相关接口将返回提示文案。
                 if (!StringUtils.hasText(props.getOpenai().getApiKey())) {
-                    throw new IllegalStateException("ai.provider=openai but ai.openai.api-key is empty. Please set OPENAI_API_KEY or ai.openai.api-key");
+                    yield new DisabledChatLanguageModel("ai.provider=openai 但未配置 OPENAI_API_KEY/ai.openai.api-key");
                 }
                 yield OpenAiChatModel.builder()
                         .apiKey(props.getOpenai().getApiKey())
