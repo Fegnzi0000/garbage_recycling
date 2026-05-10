@@ -1,6 +1,6 @@
 # 垃圾回收系统后端（garbage_recycling）
 
-> 文档最近更新：2026-05-05
+> 文档最近更新：2026-05-10
 >
 > 本仓库为 Spring Boot 后端服务，包含：微信（含测试模式）登录鉴权、垃圾分类与图片资源、地址管理、个人/高校/企业下单、订单管理等。
 >
@@ -14,8 +14,52 @@
 2. [技术栈与运行环境](#2-技术栈与运行环境)
 3. [快速启动](#3-快速启动)
 4. [配置说明（application.yml）](#4-配置说明applicationyml)
+   - [4.1 服务与序列化](#41-服务与序列化)
+   - [4.2 数据源与 Redis](#42-数据源与-redis)
+   - [4.8 Redis 高级缓存策略（本仓库已实现）](#48-redis-高级缓存策略本仓库已实现)
+     - [4.8.1 覆盖的接口/查询点](#481-覆盖的接口查询点)
+     - [4.8.2 缓存 Key 设计](#482-缓存-key-设计)
+     - [4.8.3 策略说明（穿透 / 雪崩 / 击穿）](#483-策略说明穿透--雪崩--击穿)
+     - [4.8.4 默认 TTL 参数（可按需调整）](#484-默认-ttl-参数可按需调整)
+     - [4.8.5 如何验证缓存是否生效](#485-如何验证缓存是否生效)
+   - [4.9 AI 回收助手（LangChain4j）配置（可选）](#49-ai-回收助手langchain4j配置可选)
+     - [4.9.1 OpenAI（默认）](#491-openai默认)
+     - [4.9.2 Ollama（本地模型）](#492-ollama本地模型)
+     - [4.9.3 RAG 知识库](#493-rag-知识库)
+     - [4.9.4 模块结构（关键类一览）](#494-模块结构关键类一览)
+     - [4.9.5 RAG（检索增强生成）工作流程](#495-rag检索增强生成工作流程)
+      - [4.9.6 Tool Calling（工具调用）设计：只生成“下单草稿”](#496-tool-calling工具调用设计只生成下单草稿)
+      - [4.9.7 二次确认（Two-step Confirmation）与草稿存储](#497-二次确认two-step-confirmation与草稿存储)
+      - [4.9.8 安全与隐私（必须了解）](#498-安全与隐私必须了解)
+      - [4.9.9 调试与模型选择建议](#499-调试与模型选择建议)
+      - [4.9.10 如何关闭 AI 模块](#4910-如何关闭-ai-模块)
+   - [4.3 MyBatis-Plus](#43-mybatis-plus)
+   - [4.4 微信登录（含测试模式）](#wechat-login)
+      - [4.4.1 设计目标（微信登录 + 本地模拟登录）](#wechat-441)
+      - [4.4.2 登录流程（前端 -> 后端 -> 微信）](#wechat-442)
+      - [4.4.3 配置项说明](#wechat-443)
+      - [4.4.4 真实微信 jscode2session 对接（WeChatUtil）](#wechat-444)
+      - [4.4.5 本地模拟登录（测试模式）](#wechat-445)
+      - [4.4.6 测试 code 清单](#wechat-446)
+      - [4.4.7 企业测试用户（test_code_enterprise）](#wechat-447)
+      - [4.4.8 接口示例（HTTP / Swagger）](#wechat-448)
+      - [4.4.9 生产环境注意事项](#wechat-449)
+   - [4.5 JWT](#45-jwt)
+   - [4.6 文件上传与图片目录](#46-文件上传与图片目录)
+   - [4.7 高校价格配置（示例）](#47-高校价格配置示例)
 5. [接口与功能一览](#5-接口与功能一览)
+   - [5.1 认证接口（/auth）](#51-认证接口auth)
+   - [5.2 地址管理（/address）](#52-地址管理推荐address对应-user_address-表)
+   - [5.3 个人订单（/order）](#53-个人订单order)
+   - [5.4 高校订单（/campusOrder）](#54-高校订单campusorder)
+   - [5.5 企业订单（/enterprise）](#55-企业订单enterprise)
+   - [5.6 垃圾分类（/category）](#56-垃圾分类category)
+   - [5.7 身份背景图（/identity）](#57-身份背景图identity)
+   - [5.8 订单管理（/manage/order）](#58-订单管理manageorder)
+   - [5.9 回收助手（LangChain4j，/assistant）](#59-回收助手langchain4jassistant)
 6. [Swagger / HTTP 文件测试](#6-swagger--http-文件测试)
+   - [6.1 Swagger](#61-swagger)
+   - [6.2 IntelliJ HTTP Client](#62-intellij-http-client)
 7. [常见问题排查](#7-常见问题排查)
 8. [附录：模块演进记录（历史文档原文）](#8-附录模块演进记录历史文档原文)
 
@@ -362,18 +406,158 @@ ai:
 - `mybatis-plus.configuration.map-underscore-to-camel-case`：下划线转驼峰
 - `mybatis-plus.global-config.db-config.logic-delete-*`：逻辑删除字段配置
 
-### 4.4 微信登录（含测试模式）
+### 4.4 微信登录（含测试模式） <a id="wechat-login"></a>
+
+本项目实现了“**真实微信登录**（jscode2session）+ **本地模拟登录**（测试模式）”两套能力：
+
+- 线上/真机：走微信 `wx.login()` 产生的临时 `code` → 后端调用 `jscode2session` 获取 `openid`。
+- 本地/联调/CI：开启测试模式后，允许使用 `test_code_*` 直接在后端生成 mock 的 `openid/session_key`，避免依赖外部微信环境。
+
+相关实现代码：
+
+- `com.stu.util.WeChatUtil#getOpenidByCode`：真实调用 + 测试模式分支
+- `com.stu.controller.AuthController#wechatLogin`：登录接口（生成 JWT、创建/更新用户）
+
+#### 4.4.1 设计目标（微信登录 + 本地模拟登录） <a id="wechat-441"></a>
+
+微信登录对接完成后，仍然会遇到一些典型痛点：
+
+1) **本地/测试环境没有小程序容器**：无法直接运行 `wx.login()` 取得真实 `code`。
+2) **外部依赖不稳定**：网络、微信服务、AppSecret 配置等问题会影响联调效率。
+3) **多人协作/自动化测试**：希望能快速生成不同类型用户（个人/校园/企业）来覆盖接口联调。
+
+因此本项目提供 `wechat.test.mode=true` 的“本地模拟登录”，降低对外部环境依赖。
+
+#### 4.4.2 登录流程（前端 -> 后端 -> 微信） <a id="wechat-442"></a>
+
+真实微信登录完整流程如下：
+
+1) 小程序端调用 `wx.login()` 获取临时 `code`（有效期短、一次性）。
+2) 前端调用后端接口：`POST /api/auth/wechat/login?code=...`。
+3) 后端在 `WeChatUtil#getOpenidByCode(code)` 中拼接 `jscode2session` URL 并请求微信：
+   - 成功时返回 `openid/session_key/unionid`。
+   - 失败时返回 `errcode/errmsg`。
+4) 后端在 `AuthController#wechatLogin` 中：
+   - 根据 `openid` 查询/创建用户（`UserService#createOrUpdateUser`）
+   - 生成 JWT：`JwtUtil#generateToken(userId, openid)`
+   - 返回：`Result{ code=200, msg, data{ token, user, message } }`
+
+> 鉴权说明：登录成功后，后续请求通过请求头携带：`Authorization: Bearer <token>`。
+
+#### 4.4.3 配置项说明 <a id="wechat-443"></a>
+
+配置位于 `src/main/resources/application.yml`：
+
+```yaml
+wechat:
+  app-id: <your_appid>
+  app-secret: <your_appsecret>
+  auth-url: https://api.weixin.qq.com/sns/jscode2session?appid={0}&secret={1}&js_code={2}&grant_type=authorization_code
+  test:
+    mode: true
+```
 
 - `wechat.app-id` / `wechat.app-secret`：正式环境微信配置
-- `wechat.auth-url`：`jscode2session` 请求模板
-- `wechat.test.mode`：测试模式开关（`true/false`）
+- `wechat.auth-url`：`jscode2session` 模板（本项目用 `{0}/{1}/{2}` 进行字符串替换）
+- `wechat.test.mode`：本地模拟开关（建议：**生产环境务必关闭**）
 
-测试模式下，可用 `code`：
+> 安全提示：`app-secret` 不建议明文提交仓库。推荐做法：使用 `application-local.yml` 覆盖，或通过环境变量/配置中心注入。
 
-- `test_code_person`：个人测试用户
-- `test_code_campus`：校园测试用户
-- `test_code_enterprise`：企业测试用户（会在登录接口中设置 `userType=enterprise` 相关字段）
-- 以及任何 `test_code*` 前缀的动态 code（会自动生成 mock openid）
+#### 4.4.4 真实微信 jscode2session 对接（WeChatUtil） <a id="wechat-444"></a>
+
+当 `wechat.test.mode=false`（或 `code` 不匹配测试规则）时，会走真实微信接口：
+
+- URL 由 `wechat.auth-url` 模板 + `appId/appSecret/code` 拼接。
+- 通过 `RestTemplate` 发起 GET 请求。
+- 解析微信响应 JSON，取出：`openid/session_key/unionid/errcode/errmsg`。
+
+`AuthController` 会检查 `errcode`：
+
+- `errcode != 0`：直接返回 `Result.error("微信登录失败: " + errmsg)`
+- `openid == null`：返回“无法获取用户信息”
+
+#### 4.4.5 本地模拟登录（测试模式） <a id="wechat-445"></a>
+
+当 `wechat.test.mode=true` 时：
+
+1) 如果 `code` 在内置映射表中（见 `WeChatUtil#initTestUsers`），直接返回对应的模拟用户信息。
+2) 如果 `code` 不在映射表，但满足 `code.startsWith("test_code")`，则**动态生成**一个 mock 用户：
+   - `openid = "mock_" + code`
+   - `session_key = "mock_session_" + 当前时间戳`
+   - `unionid = "mock_union_" + code`
+
+这样做的好处是：联调时不需要频繁改代码或改数据库，只要约定一个 `test_code_xxx` 就能快速拿到一个“稳定且可重复”的 mock openid。
+
+#### 4.4.6 测试 code 清单 <a id="wechat-446"></a>
+
+以下 code 在 `WeChatUtil#initTestUsers` 中固定提供：
+
+- `test_code_person`：个人测试用户（openid=`test_person_openid`）
+- `test_code_campus`：校园测试用户（openid=`test_campus_openid`）
+- `test_code_enterprise`：企业测试用户（openid=`test_enterprise_openid`）
+
+此外还兼容：
+
+- 任意 `test_code*` 前缀的动态 code（例如 `test_code_debug_001`）
+
+#### 4.4.7 企业测试用户（test_code_enterprise） <a id="wechat-447"></a>
+
+为了方便联调企业接口（需要 `user_type=enterprise`），本项目在 `AuthController#wechatLogin` 中做了一个特殊分支：
+
+- 当 `code=test_code_enterprise` 时：后端会把用户设置为企业用户，并允许传入企业字段：
+  - `companyName`
+  - `unifiedSocialCreditCode`
+  - `invoiceTitle`
+  - `taxNumber`
+
+> 说明：无需额外传 `userType` 参数，后端根据 `code` 决定用户类型。
+
+#### 4.4.8 接口示例（HTTP / Swagger） <a id="wechat-448"></a>
+
+接口：`POST /api/auth/wechat/login`
+
+- Content-Type：推荐 `application/x-www-form-urlencoded`（与 `OrderTest.http` 一致）
+- 必填参数：`code`
+- 选填参数：`nickname/avatarUrl/identityType/schoolName/department/extendedInfo` 等
+
+示例：个人测试用户登录
+
+```http
+POST http://localhost:8080/api/auth/wechat/login
+Content-Type: application/x-www-form-urlencoded
+
+code=test_code_person&nickname=测试个人&avatarUrl=http://example.com/p1.jpg&identityType=1
+```
+
+示例：企业测试用户登录
+
+```http
+POST http://localhost:8080/api/auth/wechat/login
+Content-Type: application/x-www-form-urlencoded
+
+code=test_code_enterprise&nickname=测试企业&avatarUrl=http://example.com/e1.jpg&companyName=某某环保科技有限公司&unifiedSocialCreditCode=91310000MA1K123456&invoiceTitle=某某环保科技有限公司&taxNumber=91310000MA1K123456
+```
+
+响应（简化示意）：
+
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "message": "登录成功",
+    "token": "<jwt>",
+    "user": { "id": 1, "openid": "..." }
+  }
+}
+```
+
+#### 4.4.9 生产环境注意事项 <a id="wechat-449"></a>
+
+1) **生产务必关闭测试模式**：`wechat.test.mode=false`。
+2) **不要明文提交 app-secret**：使用 `application-local.yml` 或环境变量注入。
+3) **Token 使用约定**：请求头必须带 `Authorization: Bearer <token>`，否则会被 `JwtInterceptor` 拦截返回 401。
+4) **登录接口免鉴权**：见 `WebMvcConfig#addInterceptors` 中的 `excludePathPatterns("/auth/wechat/login")`。
 
 ### 4.5 JWT
 
